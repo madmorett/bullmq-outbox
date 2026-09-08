@@ -20,6 +20,13 @@ function safely(run: () => void): void {
   }
 }
 
+/** Rejections are not guaranteed to be Errors. */
+function messageOf(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return String(error);
+}
+
 /**
  * Job options are persisted as JSON, so anything that cannot survive a round
  * trip is dropped rather than silently corrupting the replay.
@@ -35,6 +42,38 @@ function serializableOpts(opts: unknown): unknown {
   return rest;
 }
 
+/**
+ * Snapshot the payload so a later mutation cannot change what gets replayed,
+ * and surface an unserializable payload at capture time — where the caller
+ * still has the real error for context — instead of inside the user's store.
+ */
+function snapshot(data: unknown): unknown {
+  if (data === undefined) return undefined;
+  return JSON.parse(JSON.stringify(data));
+}
+
+/**
+ * How the replay reaches Redis.
+ *
+ * The application's `add` is instrumented: it captures failures. The replay
+ * must NOT go through it, or a drain that fails would store a second entry
+ * for the job it is currently replaying, and every subsequent drain would
+ * double the backlog again — 1, 2, 4, 8.
+ *
+ * So the raw queue is kept alongside the instrumented one and the drain uses
+ * it directly. Scoping this to the replay path, rather than to a window of
+ * time, is deliberate: a flag flipped for the duration of `flush()` would
+ * silently drop live application jobs that fail during the drain, which is
+ * precisely the traffic this package exists to protect and precisely when it
+ * is failing.
+ */
+type RegisteredQueue = {
+  /** The queue as the application sees it. */
+  instrumented: MinimalQueue;
+  /** The same queue, without capture. Used only by `replay`. */
+  raw: MinimalQueue;
+};
+
 export class Outbox {
   private readonly store: OutboxStore;
   private readonly maxAttempts: number;
@@ -42,8 +81,8 @@ export class Outbox {
   private readonly generateId: () => string;
   private readonly shouldCapture: NonNullable<OutboxOptions['shouldCapture']>;
 
-  /** Queues registered via `wrapQueue`, so `flush()` can find them again. */
-  private readonly queues = new Map<string, MinimalQueue>();
+  /** Queues known to this outbox, so `flush()` can find them again. */
+  private readonly queues = new Map<string, RegisteredQueue>();
 
   constructor(options: OutboxOptions) {
     this.store = options.store;
@@ -72,52 +111,75 @@ export class Outbox {
    * tell the user.
    */
   wrapQueue<Q extends MinimalQueue>(queue: Q): Q {
-    this.queues.set(queue.name, queue);
-
     const outbox = this;
 
-    return new Proxy(queue, {
+    const proxy = new Proxy(queue, {
       get(target, property, receiver) {
         if (property === 'add') {
-          return function add(name: string, data: unknown, opts?: unknown) {
-            return Promise.resolve(target.add(name, data, opts)).catch(
-              async (error: Error) => {
-                await outbox.capture(target.name, name, data, opts, error);
-                throw error;
-              },
-            );
+          return async function add(
+            name: string,
+            data: unknown,
+            opts?: unknown,
+          ) {
+            try {
+              // Inside try, not `Promise.resolve(...).catch`: a queue that
+              // throws synchronously (a validation guard in some future
+              // version) must be captured too.
+              return await target.add(name, data, opts);
+            } catch (error) {
+              await outbox.capture(target.name, name, data, opts, error);
+              throw error;
+            }
           };
         }
 
         if (property === 'addBulk') {
-          return function addBulk(
+          return async function addBulk(
             jobs: { name: string; data: unknown; opts?: unknown }[],
           ) {
-            return Promise.resolve(target.addBulk(jobs)).catch(
-              async (error: Error) => {
-                // One entry per job: a partial bulk failure is indistinguishable
-                // from a total one at this layer, and a job replayed twice is
-                // cheaper than a job lost. Give jobs a `jobId` if the replay
-                // needs to dedupe.
-                for (const job of jobs) {
-                  await outbox.capture(
-                    target.name,
-                    job.name,
-                    job.data,
-                    job.opts,
-                    error,
-                  );
-                }
-                throw error;
-              },
-            );
+            try {
+              return await target.addBulk(jobs);
+            } catch (error) {
+              // One entry per job: a partial bulk failure is indistinguishable
+              // from a total one at this layer, and a job replayed twice is
+              // cheaper than a job lost. Give jobs a `jobId` if the replay
+              // needs to dedupe.
+              for (const job of jobs) {
+                await outbox.capture(
+                  target.name,
+                  job.name,
+                  job.data,
+                  job.opts,
+                  error,
+                );
+              }
+              throw error;
+            }
           };
         }
 
-        const value = Reflect.get(target, property, receiver);
-        return typeof value === 'function' ? value.bind(target) : value;
+        // `target` as the receiver, not the proxy: a prototype getter reading
+        // a #private field would throw if `this` were the proxy.
+        const value = Reflect.get(target, property, target);
+
+        if (typeof value === 'function') {
+          const bound = value.bind(target);
+          return function forward(this: unknown, ...args: unknown[]) {
+            const result = bound(...args);
+            // Chainable methods (`on`, `once`, `off`) return the queue itself.
+            // Handing back the raw queue would silently drop the fallback for
+            // anyone who writes `wrapQueue(q).on('error', log)`.
+            return result === target ? receiver : result;
+          };
+        }
+
+        return value;
       },
     }) as Q;
+
+    this.queues.set(queue.name, { instrumented: proxy, raw: queue });
+
+    return proxy;
   }
 
   /**
@@ -150,14 +212,30 @@ export class Outbox {
     return class OutboxQueue extends (BaseQueue as QueueConstructor<MinimalQueue>) {
       constructor(...args: ConstructorParameters<QueueConstructor<Q>>) {
         super(...args);
-        outbox.registerQueue(this);
+
+        // `raw` bypasses this subclass's overrides, so the drain re-enqueues
+        // without going through capture. Bound to `super` explicitly rather
+        // than reaching for the prototype, which is what the original
+        // production implementation had to do.
+        outbox.queues.set(this.name, {
+          instrumented: this,
+          raw: {
+            name: this.name,
+            add: (name, data, opts) => super.add(name, data, opts),
+            addBulk: (jobs) => super.addBulk(jobs),
+          },
+        });
       }
 
-      override async add(name: string, data: unknown, opts?: unknown): Promise<unknown> {
+      override async add(
+        name: string,
+        data: unknown,
+        opts?: unknown,
+      ): Promise<unknown> {
         try {
           return await super.add(name, data, opts);
         } catch (error) {
-          await outbox.capture(this.name, name, data, opts, error as Error);
+          await outbox.capture(this.name, name, data, opts, error);
           throw error;
         }
       }
@@ -174,7 +252,7 @@ export class Outbox {
               job.name,
               job.data,
               job.opts,
-              error as Error,
+              error,
             );
           }
           throw error;
@@ -186,9 +264,11 @@ export class Outbox {
   /**
    * Register a queue that was not created through `wrapQueue` — for instance
    * when the process draining the outbox is not the one that enqueues.
+   *
+   * The queue is used for replay only, so pass the plain queue.
    */
   registerQueue(queue: MinimalQueue): void {
-    this.queues.set(queue.name, queue);
+    this.queues.set(queue.name, { instrumented: queue, raw: queue });
   }
 
   /** Persist a failed enqueue by hand. `wrapQueue` calls this for you. */
@@ -197,20 +277,37 @@ export class Outbox {
     jobName: string,
     data: unknown,
     opts: unknown,
-    error: Error,
+    error: unknown,
   ): Promise<void> {
     if (!this.shouldCapture({ queueName, jobName, error })) return;
 
-    const entry: OutboxEntry = {
-      id: this.generateId(),
-      queueName,
-      jobName,
-      data,
-      opts: serializableOpts(opts),
-      createdAt: new Date().toISOString(),
-      attempts: 0,
-      lastError: error.message,
-    };
+    const message = messageOf(error);
+
+    let entry: OutboxEntry;
+    try {
+      entry = {
+        id: this.generateId(),
+        queueName,
+        jobName,
+        data: snapshot(data),
+        opts: serializableOpts(opts),
+        createdAt: new Date().toISOString(),
+        attempts: 0,
+        lastError: message,
+      };
+    } catch (serializationError) {
+      // A payload that cannot be JSON'd could never have been replayed. Say so
+      // through the hook rather than throwing over the caller's real error.
+      safely(() =>
+        this.hooks.onSaveFailed?.({
+          queueName,
+          jobName,
+          originalError: message,
+          storeError: `payload is not serializable: ${messageOf(serializationError)}`,
+        }),
+      );
+      return;
+    }
 
     try {
       await this.store.save(entry);
@@ -219,7 +316,7 @@ export class Outbox {
           queueName,
           jobName,
           id: entry.id,
-          error: error.message,
+          error: message,
         }),
       );
     } catch (storeError) {
@@ -230,11 +327,8 @@ export class Outbox {
         this.hooks.onSaveFailed?.({
           queueName,
           jobName,
-          originalError: error.message,
-          storeError:
-            storeError instanceof Error
-              ? storeError.message
-              : String(storeError),
+          originalError: message,
+          storeError: messageOf(storeError),
         }),
       );
     }
@@ -283,11 +377,11 @@ export class Outbox {
   private async replay(
     entry: OutboxEntry,
   ): Promise<FlushResult['details'][number]> {
-    const queue = this.queues.get(entry.queueName);
+    const registered = this.queues.get(entry.queueName);
 
     // Not an error: with several services against one store, each drains the
     // queues it owns and leaves the rest to whoever registered them.
-    if (!queue) {
+    if (!registered) {
       return {
         id: entry.id,
         queueName: entry.queueName,
@@ -297,52 +391,81 @@ export class Outbox {
     }
 
     try {
-      await queue.add(entry.jobName, entry.data, entry.opts);
-      await this.store.markProcessed(entry.id);
+      // The raw queue: a failed replay must not capture a duplicate of the
+      // entry it is replaying.
+      await registered.raw.add(entry.jobName, entry.data, entry.opts);
+    } catch (error) {
+      return this.replayFailed(entry, messageOf(error));
+    }
 
+    // Past this point the job IS in Redis. A store that fails to record that
+    // is a bookkeeping problem, not a delivery one: reporting it as a failed
+    // replay would re-enqueue the job on the next drain and eventually expire
+    // a job that actually succeeded.
+    try {
+      await this.store.markProcessed(entry.id);
+    } catch (error) {
       safely(() =>
-        this.hooks.onJobRequeued?.({
+        this.hooks.onSaveFailed?.({
+          queueName: entry.queueName,
+          jobName: entry.jobName,
+          originalError: 'replayed, but the store did not record it',
+          storeError: messageOf(error),
+        }),
+      );
+    }
+
+    safely(() =>
+      this.hooks.onJobRequeued?.({
+        queueName: entry.queueName,
+        jobName: entry.jobName,
+        id: entry.id,
+        ageMs: Date.now() - new Date(entry.createdAt).getTime(),
+        attempts: entry.attempts,
+      }),
+    );
+
+    return {
+      id: entry.id,
+      queueName: entry.queueName,
+      jobName: entry.jobName,
+      status: 'requeued',
+    };
+  }
+
+  private async replayFailed(
+    entry: OutboxEntry,
+    message: string,
+  ): Promise<FlushResult['details'][number]> {
+    const attempts = entry.attempts + 1;
+    const expired = attempts >= this.maxAttempts;
+
+    await this.store.markFailed({
+      id: entry.id,
+      error: message,
+      attempts,
+      expired,
+    });
+
+    if (expired) {
+      safely(() =>
+        this.hooks.onJobExpired?.({
           queueName: entry.queueName,
           jobName: entry.jobName,
           id: entry.id,
-          ageMs: Date.now() - new Date(entry.createdAt).getTime(),
-          attempts: entry.attempts,
+          attempts,
+          lastError: message,
         }),
       );
-
-      return {
-        id: entry.id,
-        queueName: entry.queueName,
-        jobName: entry.jobName,
-        status: 'requeued',
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const attempts = entry.attempts + 1;
-      const expired = attempts >= this.maxAttempts;
-
-      await this.store.markFailed(entry.id, message, attempts, expired);
-
-      if (expired) {
-        safely(() =>
-          this.hooks.onJobExpired?.({
-            queueName: entry.queueName,
-            jobName: entry.jobName,
-            id: entry.id,
-            attempts,
-            lastError: message,
-          }),
-        );
-      }
-
-      return {
-        id: entry.id,
-        queueName: entry.queueName,
-        jobName: entry.jobName,
-        status: expired ? 'expired' : 'failed',
-        error: message,
-      };
     }
+
+    return {
+      id: entry.id,
+      queueName: entry.queueName,
+      jobName: entry.jobName,
+      status: expired ? 'expired' : 'failed',
+      error: message,
+    };
   }
 }
 

@@ -51,6 +51,8 @@ export function createRedisOutboxStore(redis: Redis): OutboxStore {
       const results = await pipeline.exec();
 
       const entries: OutboxEntry[] = [];
+      /** Index slots whose hash is gone; dropped below rather than returned. */
+      const dangling: string[] = [];
 
       results?.forEach(([error, value], index) => {
         const id = ids[index]!;
@@ -59,7 +61,7 @@ export function createRedisOutboxStore(redis: Redis): OutboxStore {
         // The hash expired or was deleted out from under the index. Drop the
         // dangling id rather than returning a half-entry forever.
         if (error || !hash || !hash.queueName) {
-          void redis.zrem(PENDING_KEY, id);
+          dangling.push(id);
           return;
         }
 
@@ -75,6 +77,8 @@ export function createRedisOutboxStore(redis: Redis): OutboxStore {
         });
       });
 
+      if (dangling.length > 0) await redis.zrem(PENDING_KEY, ...dangling);
+
       return entries;
     },
 
@@ -86,20 +90,16 @@ export function createRedisOutboxStore(redis: Redis): OutboxStore {
         .exec();
     },
 
-    async markFailed(
-      id: string,
-      error: string,
-      attempts: number,
-      expired: boolean,
-    ) {
-      const key = `${ENTRY_PREFIX}${id}`;
-      const multi = redis
-        .multi()
-        .hset(key, { attempts: String(attempts), lastError: error });
+    async markFailed(failure) {
+      const key = `${ENTRY_PREFIX}${failure.id}`;
+      const multi = redis.multi().hset(key, {
+        attempts: String(failure.attempts),
+        lastError: failure.error,
+      });
 
-      if (expired) {
+      if (failure.expired) {
         // Out of the drain rotation, but kept long enough to be inspected.
-        multi.zrem(PENDING_KEY, id).expire(key, EXPIRED_TTL_SECONDS);
+        multi.zrem(PENDING_KEY, failure.id).expire(key, EXPIRED_TTL_SECONDS);
       }
 
       await multi.exec();

@@ -28,7 +28,7 @@
  * trail. Pick one; do not do neither.
  */
 import type { Pool } from 'pg';
-import type { OutboxEntry, OutboxStore } from 'bullmq-outbox';
+import type { OutboxEntry, OutboxStore } from '../src/index';
 
 export function createPostgresOutboxStore(pool: Pool): OutboxStore {
   return {

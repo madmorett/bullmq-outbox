@@ -1,0 +1,30 @@
+# Real Redis and real Postgres, on non-default ports so they cannot collide
+# with anything you already run.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6398:6379"
+    # noeviction is what a BullMQ Redis must run: evicting job keys under
+    # memory pressure corrupts queues. It is also what makes an OOM surface
+    # as an error we can catch instead of silent data loss.
+    command: redis-server --maxmemory-policy noeviction --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "54329:5432"
+    environment:
+      POSTGRES_PASSWORD: outbox
+      POSTGRES_USER: outbox
+      POSTGRES_DB: outbox
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U outbox"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

@@ -1,0 +1,20 @@
+{
+  "name": "bullmq-outbox-integration",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "up": "docker compose up -d --wait",
+    "down": "docker compose down -v",
+    "test": "tsx --test --test-concurrency=1 --test-timeout=30000 *.test.ts",
+    "verify": "npm run up && npm test; npm run down"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.0",
+    "bullmq": "^5.34.0",
+    "ioredis": "^5.4.0",
+    "pg": "^8.13.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

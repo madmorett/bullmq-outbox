@@ -19,7 +19,11 @@ export type OutboxEntry = {
   id: string;
   queueName: string;
   jobName: string;
-  /** The job payload, already JSON-serializable. */
+  /**
+   * The job payload, snapshotted through JSON at capture time — so it is safe
+   * to persist as-is, and a later mutation of the caller's object cannot
+   * change what gets replayed.
+   */
   data: unknown;
   /** The job options the caller passed, minus anything unserializable. */
   opts?: unknown;
@@ -46,16 +50,25 @@ export type OutboxStore = {
   /** The job made it back into Redis. Delete it, or mark it done. */
   markProcessed(id: string): Promise<void>;
   /**
-   * The re-enqueue failed again. `attempts` is the new count. When
-   * `expired` is true the entry hit `maxAttempts` and will never be retried —
-   * move it to a dead letter table or keep it for inspection.
+   * The re-enqueue failed again.
+   *
+   * An options object rather than positional arguments: `expired` next to
+   * `attempts` would be a boolean trap, and new fields can be added later
+   * without breaking every store people have written.
    */
-  markFailed(
-    id: string,
-    error: string,
-    attempts: number,
-    expired: boolean,
-  ): Promise<void>;
+  markFailed(failure: {
+    id: string;
+    /** Why the replay failed this time. */
+    error: string;
+    /** The new attempt count, already incremented. */
+    attempts: number;
+    /**
+     * The entry hit `maxAttempts` and will never be retried. Move it to a
+     * dead letter table or keep it for inspection — but do not let
+     * `loadPending` return it again.
+     */
+    expired: boolean;
+  }): Promise<void>;
 };
 
 /** Fired when a job could not reach Redis and was written to the store. */
@@ -131,9 +144,14 @@ export type OutboxOptions = {
   shouldCapture?(context: {
     queueName: string;
     jobName: string;
-    error: Error;
+    /** Whatever the queue rejected with. Not guaranteed to be an `Error`. */
+    error: unknown;
   }): boolean;
-  /** Generate entry ids. Defaults to `randomUUID()`. */
+  /**
+   * Generate entry ids. Defaults to `randomUUID()`.
+   *
+   * Must be unique: stores key on it, and a collision drops a job.
+   */
   generateId?(): string;
 } & OutboxHooks;
 

@@ -42,10 +42,10 @@ already operate. You write four functions:
 import type { OutboxStore } from 'bullmq-outbox';
 
 const myStore: OutboxStore = {
-  save(entry)                                 { /* persist it */ },
-  loadPending(limit)                          { /* oldest first */ },
-  markProcessed(id)                           { /* it made it back */ },
-  markFailed(id, error, attempts, expired)    { /* it did not */ },
+  save(entry)         { /* persist it */ },
+  loadPending(limit)  { /* oldest first, at most `limit` */ },
+  markProcessed(id)   { /* it made it back into Redis */ },
+  markFailed(failure) { /* it did not — {id, error, attempts, expired} */ },
 };
 ```
 
@@ -154,7 +154,9 @@ only what it owns.
 
 Returns a Proxy over your queue. `add` and `addBulk` gain the fallback;
 everything else — `getJob`, `pause`, `upsertJobScheduler`, Pro's group and
-batch APIs — passes straight through.
+batch APIs — passes straight through. Chainable methods (`on`, `once`) return
+the wrapped queue, not the bare one, so `wrapQueue(q).on('error', log)` keeps
+the fallback.
 
 ### `outbox.queueClass(BaseQueue)`
 
@@ -184,6 +186,25 @@ cheaper than a job lost. Set a `jobId` if you need the replay to dedupe.
 the time the outbox drains, and BullMQ would reject the whole re-enqueue.
 Flow children come back as standalone jobs.
 
+**The drain never captures its own failures.** Replay re-enqueues through the
+raw queue, so a drain that cannot reach Redis counts an attempt against the
+existing entry instead of storing a second copy of it. Without that, every
+failed drain would double the backlog.
+
+**Jobs that fail while a drain is running are still captured.** The bypass is
+scoped to the replay call, not to a window of time — live traffic failing
+mid-drain is exactly the traffic worth keeping.
+
+**Payloads are snapshotted at capture time.** `data` goes through JSON when it
+is stored, so mutating your object afterwards cannot change what gets replayed,
+and an unserializable payload is reported through `onSaveFailed` rather than
+blowing up inside your store.
+
+**A store that fails to record a successful replay does not lose the job.**
+The job is already in Redis at that point, so it counts as requeued and the
+store error surfaces through `onSaveFailed`. Treating it as a failed replay
+would re-enqueue the job and eventually expire one that had succeeded.
+
 **Replay is at-least-once.** If the store write succeeds and the process dies
 before the error propagates, you may get the job twice. Idempotent handlers,
 or a `jobId`.
@@ -191,6 +212,18 @@ or a `jobId`.
 **A broken store never breaks a job.** If `save` throws, `onSaveFailed` fires
 and the Redis error propagates unchanged — you do not want the fallback's
 failure hiding the real one.
+
+## Tested against a real Redis
+
+Unit tests with a fake queue prove the logic; they cannot prove the package
+survives a Redis that is actually out of memory. [`integration/`](integration/)
+runs against real Redis and Postgres containers and breaks the Redis for real —
+`maxmemory` set just above current usage, so writes are rejected with the same
+`OOM command not allowed` error ElastiCache throws.
+
+```bash
+cd integration && npm install && npm run verify
+```
 
 ## Where this came from
 

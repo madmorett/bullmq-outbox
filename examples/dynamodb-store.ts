@@ -49,20 +49,28 @@ export function createDynamoOutboxStore(
   tableName: string,
 ): OutboxStore {
   /**
-   * `flush` addresses entries by id, but the table is keyed by (PK, SK). The
-   * keys are derivable from the entry, so they are cached on read instead of
-   * costing an extra query per update.
+   * `flush` addresses entries by id, but the table is keyed by (PK, SK).
+   *
+   * The keys are cached on read AND derivable from the entry, so a drain that
+   * restarts mid-flush — or a second replica that never read the row — can
+   * still resolve them. Caching alone would throw exactly when the
+   * infrastructure is already falling over.
    */
   const keysById = new Map<string, { PK: string; SK: string }>();
 
-  const keysFor = (id: string) => {
-    const keys = keysById.get(id);
-    if (!keys) {
-      throw new Error(
-        `Unknown outbox entry '${id}' — markProcessed/markFailed must follow a loadPending in the same process`,
-      );
+  const keysFor = (id: string, entry?: OutboxEntry) => {
+    const cached = keysById.get(id);
+    if (cached) return cached;
+    if (entry) {
+      return {
+        PK: `QUEUE#${entry.queueName}`,
+        SK: `${entry.createdAt}#${entry.id}`,
+      };
     }
-    return keys;
+    throw new Error(
+      `Unknown outbox entry '${id}'. Pass the entry so its keys can be derived, `
+        + 'or call markProcessed/markFailed in the same process that loaded it.',
+    );
   };
 
   return {
@@ -131,12 +139,8 @@ export function createDynamoOutboxStore(
       keysById.delete(id);
     },
 
-    async markFailed(
-      id: string,
-      error: string,
-      attempts: number,
-      expired: boolean,
-    ) {
+    async markFailed(failure) {
+      const { id, error, attempts, expired } = failure;
       const keys = keysFor(id);
 
       if (!expired) {

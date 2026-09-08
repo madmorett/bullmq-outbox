@@ -26,24 +26,28 @@ export class MemoryOutboxStore implements OutboxStore {
     this.entries.delete(id);
   }
 
-  async markFailed(
-    id: string,
-    error: string,
-    attempts: number,
-    expired: boolean,
-  ): Promise<void> {
-    const entry = this.entries.get(id);
+  async markFailed(failure: {
+    id: string;
+    error: string;
+    attempts: number;
+    expired: boolean;
+  }): Promise<void> {
+    const entry = this.entries.get(failure.id);
     if (!entry) return;
 
-    const updated = { ...entry, attempts, lastError: error };
+    const updated = {
+      ...entry,
+      attempts: failure.attempts,
+      lastError: failure.error,
+    };
 
-    if (expired) {
-      this.entries.delete(id);
-      this.dead.set(id, updated);
+    if (failure.expired) {
+      this.entries.delete(failure.id);
+      this.dead.set(failure.id, updated);
       return;
     }
 
-    this.entries.set(id, updated);
+    this.entries.set(failure.id, updated);
   }
 
   /** Entries still awaiting replay. Test helper. */
