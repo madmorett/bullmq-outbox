@@ -1,0 +1,54 @@
+{
+  "name": "bullmq-outbox",
+  "version": "0.1.0",
+  "description": "Outbox fallback for BullMQ: when Redis is out of memory or unreachable, jobs land in a store you own instead of disappearing. Works with BullMQ v5, v6 and Pro.",
+  "license": "MIT",
+  "author": "Matheus Morett <matheusmorett300@gmail.com> (https://matheusmorett.com/)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/madmorett/bullmq-outbox.git"
+  },
+  "homepage": "https://github.com/madmorett/bullmq-outbox#readme",
+  "bugs": {
+    "url": "https://github.com/madmorett/bullmq-outbox/issues"
+  },
+  "keywords": [
+    "bullmq",
+    "outbox",
+    "outbox-pattern",
+    "redis",
+    "queue",
+    "reliability",
+    "job-queue",
+    "fallback",
+    "bullmq-pro"
+  ],
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
