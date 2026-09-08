@@ -152,3 +152,15 @@ export type FlushResult = {
     error?: string;
   }[];
 };
+
+/**
+ * A BullMQ queue constructor, as NestJS calls it: `new QueueClass(name, opts)`.
+ *
+ * Structural, like everything else here — `Queue` from bullmq and `QueuePro`
+ * from BullMQ Pro both satisfy it.
+ */
+export type QueueConstructor<Q extends MinimalQueue = MinimalQueue> = new (
+  name: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ...args: any[]
+) => Q;

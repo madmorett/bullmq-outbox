@@ -78,6 +78,28 @@ A job that keeps failing to re-enqueue is marked expired after `maxAttempts`
 (default 10) and your store decides what that means: a dead letter table, an
 alert, a row someone looks at on Monday.
 
+## NestJS
+
+With `@nestjs/bullmq` you never call `new Queue()` — the module builds it and
+you get it through `@InjectQueue()`. There is no instance to wrap, so swap the
+class instead:
+
+```ts
+// main.ts, before NestFactory.create()
+BullModule.queueClass = outbox.queueClass(Queue);
+```
+
+Every queue in the app is now covered, including ones added later by someone
+who never read this. Coverage stops depending on anyone remembering.
+
+Both `@nestjs/bullmq` and `@taskforcesh/nestjs-bullmq-pro` expose that setter —
+it is the documented way to substitute `QueuePro`, and it takes any subclass.
+It must run before the app bootstraps: queue providers read it at construction,
+so a module's `onModuleInit` is too late.
+
+Full working example, including the drain processor:
+[**`examples/nestjs/`**](examples/nestjs/)
+
 ## Full example
 
 ```ts
@@ -133,6 +155,12 @@ only what it owns.
 Returns a Proxy over your queue. `add` and `addBulk` gain the fallback;
 everything else — `getJob`, `pause`, `upsertJobScheduler`, Pro's group and
 batch APIs — passes straight through.
+
+### `outbox.queueClass(BaseQueue)`
+
+Returns a subclass of `BaseQueue` with the fallback built in, for frameworks
+that construct queues for you. Instances self-register, so `flush()` finds them
+without a `registerQueue` call. See [NestJS](#nestjs).
 
 ### `outbox.flush(limit?)`
 

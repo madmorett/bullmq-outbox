@@ -11,5 +11,6 @@ export type {
   OutboxHooks,
   OutboxOptions,
   OutboxStore,
+  QueueConstructor,
   SaveFailedEvent,
 } from './types';

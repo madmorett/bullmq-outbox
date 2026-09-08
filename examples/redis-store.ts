@@ -38,12 +38,12 @@ export function createRedisOutboxStore(redis: Redis): OutboxStore {
           attempts: String(entry.attempts),
           lastError: entry.lastError ?? '',
         })
-        .zadd(PENDING_KEY, new Date(entry.createdAt).getTime(), entry.id)
+        .zadd(PENDING_KEY, String(new Date(entry.createdAt).getTime()), entry.id)
         .exec();
     },
 
     async loadPending(limit: number) {
-      const ids = await redis.zrange(PENDING_KEY, 0, limit - 1);
+      const ids = await redis.zrange(PENDING_KEY, 0, String(limit - 1));
       if (ids.length === 0) return [];
 
       const pipeline = redis.pipeline();

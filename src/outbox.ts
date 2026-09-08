@@ -6,6 +6,7 @@ import type {
   OutboxHooks,
   OutboxOptions,
   OutboxStore,
+  QueueConstructor,
 } from './types';
 
 const DEFAULT_MAX_ATTEMPTS = 10;
@@ -117,6 +118,69 @@ export class Outbox {
         return typeof value === 'function' ? value.bind(target) : value;
       },
     }) as Q;
+  }
+
+  /**
+   * Return a queue *class* with the fallback built in, for frameworks that
+   * construct queues for you.
+   *
+   * NestJS is the case that needs this: with `@nestjs/bullmq` you never call
+   * `new Queue()` yourself, so there is no instance to wrap. Both
+   * `@nestjs/bullmq` and `@taskforcesh/nestjs-bullmq-pro` expose a
+   * `BullModule.queueClass` setter for exactly this kind of substitution:
+   *
+   *     BullModule.queueClass = outbox.queueClass(Queue);
+   *
+   * Set it before any module is registered and every queue in the app is
+   * covered — including the ones added next year by someone who never read
+   * this README. That is the argument for doing it here rather than wrapping
+   * each injected queue: coverage stops depending on anyone remembering.
+   *
+   * Instances register themselves, so `flush()` finds them without a
+   * `registerQueue` call.
+   */
+  queueClass<Q extends MinimalQueue>(
+    BaseQueue: QueueConstructor<Q>,
+  ): QueueConstructor<Q> {
+    const outbox = this;
+
+    // Subclassing the caller's class, not a class from this package: the
+    // result is a real Queue, so `instanceof`, private fields and everything
+    // the framework does to the instance afterwards keep working.
+    return class OutboxQueue extends (BaseQueue as QueueConstructor<MinimalQueue>) {
+      constructor(...args: ConstructorParameters<QueueConstructor<Q>>) {
+        super(...args);
+        outbox.registerQueue(this);
+      }
+
+      override async add(name: string, data: unknown, opts?: unknown): Promise<unknown> {
+        try {
+          return await super.add(name, data, opts);
+        } catch (error) {
+          await outbox.capture(this.name, name, data, opts, error as Error);
+          throw error;
+        }
+      }
+
+      override async addBulk(
+        jobs: { name: string; data: unknown; opts?: unknown }[],
+      ): Promise<unknown> {
+        try {
+          return await super.addBulk(jobs);
+        } catch (error) {
+          for (const job of jobs) {
+            await outbox.capture(
+              this.name,
+              job.name,
+              job.data,
+              job.opts,
+              error as Error,
+            );
+          }
+          throw error;
+        }
+      }
+    } as unknown as QueueConstructor<Q>;
   }
 
   /**
