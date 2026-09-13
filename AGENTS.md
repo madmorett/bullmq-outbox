@@ -46,9 +46,12 @@ prefer them unless the user's stack says otherwise.
 idempotent — add it to the user's migration tool rather than executing it at
 boot if they have one.
 
-**The partial index is not optional.** Without the `where status = 'pending'`
-predicate the index grows with total history instead of pending backlog. Keep
-it.
+**Do not drop or "simplify" the partial index.** All four store queries run on
+an index as shipped: the drain uses the partial index, and save/markProcessed/
+markFailed are by `id`, covered by the primary key. Nothing else needs adding.
+Replacing the partial index with a plain one on `(status, created_at)` gives
+the same speed but 19 MB instead of 16 kB at 500k rows, growing forever.
+Removing it turns the drain into a sequential scan.
 
 **Redis as the store only works if it is a different Redis** from the one
 running the queues. Same instance means the fallback dies with what it backs

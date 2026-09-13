@@ -29,17 +29,26 @@ create table if not exists bullmq_outbox (
                 check (status in ('pending', 'processed', 'expired'))
 );
 
--- The only query on the hot path: oldest pending first.
+-- The drain's query, and the only one that touches more than a single row.
 --
--- The WHERE clause is the important part. After an incident this table is
--- almost entirely 'processed' rows, and a partial index stays proportional to
--- what is still pending instead of to everything you ever stored. Measured at
--- 500k resolved rows: 0.83 ms to read 50 pending, with a 16 kB index on a
--- 74 MB table.
+-- The WHERE clause is what makes it cheap. A plain index on
+-- (status, created_at) works too, but it indexes every row you ever stored;
+-- the partial one indexes only what is still pending. Measured on a table
+-- with 500,000 processed rows and 50 pending:
 --
--- Drop the WHERE and the drain stays fast but the index grows forever. Drop
--- the index entirely and you get a sequential scan — an outbox that gets
--- slower every month, precisely when you need it.
+--   partial index (this one)           16 kB
+--   plain index on (status, created_at) 19 MB
+--
+-- Same query speed — Postgres reads 3 pages either way — but one grows with
+-- your backlog and the other grows forever. With both present the planner
+-- picks this one.
+--
+-- With no index at all the query becomes a sequential scan: 13.7 ms instead
+-- of 0.9 ms on that table, degrading with every job you process.
+--
+-- The other three queries the store runs (save, markProcessed, markFailed)
+-- are all by `id`, so the primary key already covers them. These two indexes
+-- are all you need.
 create index if not exists bullmq_outbox_pending
   on bullmq_outbox (created_at)
   where status = 'pending';
