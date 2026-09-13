@@ -1,6 +1,6 @@
 {
   "name": "bullmq-outbox",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Outbox fallback for BullMQ: when Redis is out of memory or unreachable, jobs land in a store you own instead of disappearing. Works with BullMQ v5, v6 and Pro.",
   "license": "MIT",
   "author": "Matheus Morett <matheusmorett300@gmail.com> (https://matheusmorett.com/)",
