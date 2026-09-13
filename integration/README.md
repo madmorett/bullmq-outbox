@@ -58,45 +58,50 @@ ever replayed.
 
 `pnpm run scale` answers this with numbers rather than assurances.
 
-The property that makes the production DynamoDB deployment scale is that its
-`status-createdAt-index` GSI reads only PENDING items, oldest first, without
-touching the table — cost is proportional to what is pending, not to
-everything ever stored.
+The worry: after months in production the store holds hundreds of thousands of
+already-processed jobs. Does finding the few still pending get slower?
 
-Postgres and Mongo get the same property from a **partial index**. The script
-fills the store with resolved entries, keeps 50 pending, and measures
-`loadPending(50)` as history grows:
+**Every row below has exactly 50 pending entries to fetch.** What grows is the
+pile of already-processed rows around them.
 
 ```
 === Postgres ===
-resolved rows |  loadPending(50)  | plan
-            0 |           1.14 ms | index
-        50000 |           0.79 ms | index
-       200000 |           0.89 ms | index
-       500000 |           0.83 ms | index
+  processed rows in table | time to fetch the 50 pending | plan
+                        0 |                      1.01 ms | index
+                    50000 |                      0.88 ms | index
+                   200000 |                      0.66 ms | index
+                   500000 |                      0.94 ms | index
 table 74 MB, partial index 16 kB
 
 === MongoDB ===
-resolved docs |  loadPending(50)  | plan
-            0 |           0.92 ms | index (examined 50 docs for 50)
-        50000 |           0.69 ms | index (examined 50 docs for 50)
-       200000 |           1.09 ms | index (examined 50 docs for 50)
-       500000 |           0.65 ms | index (examined 50 docs for 50)
+  processed docs in coll. | time to fetch the 50 pending | plan
+                        0 |                      0.87 ms | index (read 50 docs to return 50)
+                    50000 |                      1.29 ms | index (read 50 docs to return 50)
+                   200000 |                      0.69 ms | index (read 50 docs to return 50)
+                   500000 |                      0.71 ms | index (read 50 docs to return 50)
 collection 81.4 MB, pending index 12 kB
+
+=== Postgres, same 500k table, WITHOUT the partial index ===
+  13.70 ms | SEQ SCAN
 ```
 
-Flat, on both. Never a `Seq Scan` or a `COLLSCAN`. Mongo examines exactly 50
-documents to return 50, with half a million in the collection.
+Flat on both. The row-to-row differences are noise — they do not move in one
+direction — and that is exactly the point: history costs nothing.
 
-The index sizes are the same story from another angle: a 74 MB table with a
-16 kB index. The partial index only covers what is pending, so it tracks the
-size of your backlog rather than the size of your history.
+The control case is what makes this falsifiable. Drop the partial index and
+the same query on the same table takes 15× longer, on a sequential scan that
+degrades with every job you ever process.
 
-**If you drop the partial predicate, you lose this.** A plain index on
-`(status, createdAt)` still works but grows with every job you ever stored;
-the drain stays fast, the storage bill does not. And with no index at all the
-query degrades to a full scan, which is an outbox that gets slower every
-month — precisely when you need it.
+That property — cost proportional to the pending backlog, not to total
+history — is the one that makes the production DynamoDB deployment scale,
+where the `status-createdAt-index` GSI reads only PENDING items without
+touching the table.
+
+Index size says it from another angle: a 74 MB table with a 16 kB index.
+
+Measured on Docker containers on a laptop, so the absolute milliseconds are
+indicative. The shape — constant rather than growing — is what matters and is
+what survives a move to real infrastructure.
 
 ## Ports
 

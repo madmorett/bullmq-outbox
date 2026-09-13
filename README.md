@@ -250,25 +250,43 @@ what was exercised.
 
 ### Does the drain stay cheap as the store fills up?
 
-`pnpm run scale` measures `loadPending(50)` as resolved history grows:
+The worry: after months in production the table holds hundreds of thousands of
+already-processed jobs. Does finding the handful still pending get slower?
 
-| resolved entries | Postgres | MongoDB |
-|---|---|---|
-| 0 | 1.14 ms | 0.92 ms |
-| 500,000 | **0.83 ms** | **0.65 ms** |
+`pnpm run scale` measures it. **Every row below has exactly 50 pending entries
+to fetch** — what grows is the pile of already-processed rows sitting around
+them:
 
-Flat, on both, always on an index — never a `Seq Scan` or `COLLSCAN`. With
-500k documents in the collection, Mongo examines exactly 50 to return 50.
+| already-processed rows in the table | time to fetch the 50 pending |
+|---|---|
+| 0 (fresh table) | Postgres 1.01 ms · Mongo 0.87 ms |
+| 50,000 | Postgres 0.88 ms · Mongo 1.29 ms |
+| 200,000 | Postgres 0.66 ms · Mongo 0.69 ms |
+| 500,000 | Postgres 0.94 ms · Mongo 0.71 ms |
 
-That is the **partial index** doing its work, and it is why the table is 74 MB
-while its index is 16 kB: the index covers only what is pending, so it tracks
-your backlog rather than your history. It is the same property that makes the
-DynamoDB deployment this came from scale, where the GSI reads only PENDING
-items without touching the table.
+Flat. The differences between rows are measurement noise — they do not even
+move in one direction — and that is the result: **history does not cost you
+anything.** Always on an index, never a `Seq Scan` or `COLLSCAN`. Mongo reads
+exactly 50 documents to return 50, with half a million in the collection.
 
-Drop the partial predicate and the drain stays fast but the index grows
-forever. Drop the index entirely and you have an outbox that gets slower every
-month — precisely when you need it.
+The control case, same 500k table with the partial index dropped:
+
+```
+13.70 ms | SEQ SCAN ⚠
+```
+
+15× slower, and it degrades with every job you ever process. So the flat
+numbers above are the index earning its keep, not the database being fast.
+
+Index size tells the same story from another angle: **a 74 MB table with a
+16 kB index**, because a partial index only covers what is pending. It tracks
+your backlog, not your history — the same property that makes the DynamoDB
+GSI this came from scale.
+
+> Measured on Docker containers on a laptop, so treat the absolute
+> milliseconds as indicative. What the numbers establish is the shape —
+> constant rather than growing — which is what survives a move to real
+> infrastructure.
 
 ## Where this came from
 

@@ -42,7 +42,9 @@ async function postgres() {
   await pool.query('truncate bullmq_outbox');
 
   console.log('\n=== Postgres ===');
-  console.log('resolved rows |  loadPending(50)  | plan');
+  console.log('Always 50 pending rows. Only the already-processed history grows.');
+  console.log('');
+  console.log('  processed rows in table | time to fetch the 50 pending | plan');
 
   // The pending entries stay constant; only history grows.
   await pool.query(`
@@ -80,7 +82,7 @@ async function postgres() {
     const scan = JSON.stringify(node).includes('Seq Scan') ? 'SEQ SCAN ⚠' : 'index';
 
     console.log(
-      `${String(inserted).padStart(13)} | ${ms.toFixed(2).padStart(14)} ms | ${scan}`,
+      `  ${String(inserted).padStart(22)} | ${ms.toFixed(2).padStart(24)} ms | ${scan}`,
     );
   }
 
@@ -105,7 +107,9 @@ async function mongo() {
   );
 
   console.log('\n=== MongoDB ===');
-  console.log('resolved docs |  loadPending(50)  | plan');
+  console.log('Always 50 pending docs. Only the already-processed history grows.');
+  console.log('');
+  console.log('  processed docs in coll. | time to fetch the 50 pending | plan');
 
   await collection.insertMany(
     Array.from({ length: PENDING }, (_, i) => ({
@@ -155,8 +159,8 @@ async function mongo() {
       : 'index';
 
     console.log(
-      `${String(inserted).padStart(13)} | ${ms.toFixed(2).padStart(14)} ms | ${scan}` +
-      ` (examined ${stats.totalDocsExamined} docs for ${stats.nReturned})`,
+      `  ${String(inserted).padStart(22)} | ${ms.toFixed(2).padStart(24)} ms | ${scan}` +
+      ` (read ${stats.totalDocsExamined} docs to return ${stats.nReturned})`,
     );
   }
 
@@ -168,13 +172,54 @@ async function mongo() {
   await client.close();
 }
 
+/**
+ * The control case. Everything above holds *because* of the partial index;
+ * this is what the same query costs without it, so the claim is falsifiable
+ * rather than decorative.
+ */
+async function withoutTheIndex() {
+  const pool = new Pool({ connectionString: PG, max: 4 });
+
+  console.log('\n=== Postgres, same 500k table, WITHOUT the partial index ===');
+  await pool.query('drop index if exists bullmq_outbox_pending');
+  await pool.query('analyze bullmq_outbox');
+
+  const ms = await timed(() =>
+    pool.query(
+      `select id from bullmq_outbox where status = 'pending' order by created_at limit $1`,
+      [PENDING],
+    ),
+    5,
+  );
+  const plan = await pool.query(
+    `explain (format json) select id from bullmq_outbox
+      where status = 'pending' order by created_at limit ${PENDING}`,
+  );
+  const scan = JSON.stringify(plan.rows[0]['QUERY PLAN'][0]['Plan']).includes('Seq Scan')
+    ? 'SEQ SCAN ⚠'
+    : 'index';
+  console.log(`  ${ms.toFixed(2)} ms | ${scan}`);
+
+  // Put it back so the test suites still run against the documented schema.
+  await pool.query(
+    `create index if not exists bullmq_outbox_pending
+       on bullmq_outbox (created_at) where status = 'pending'`,
+  );
+  await pool.end();
+}
+
 async function main() {
   console.log(
-    `Measuring loadPending(${PENDING}) as resolved history grows.\n` +
-    'Flat = the partial index is doing its job, like the DynamoDB GSI.',
+    'The question: after months in production, with hundreds of thousands of\n' +
+    'jobs already processed sitting in the table, does finding the few still\n' +
+    `pending get slower?\n\n` +
+    `Every row below has exactly ${PENDING} PENDING entries to fetch. What grows\n` +
+    'is the pile of already-processed rows around them.\n\n' +
+    'Flat timings = no. Which is the same property the DynamoDB GSI gives.',
   );
   await postgres();
   await mongo();
+  await withoutTheIndex();
 }
 
 void main();
