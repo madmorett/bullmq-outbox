@@ -49,17 +49,36 @@ const myStore: OutboxStore = {
 };
 ```
 
-Working implementations to copy, not install:
+Working implementations to copy, not install. Each ships with its schema:
 
 | Store | File | Notes |
 |---|---|---|
-| **Postgres** | [`examples/postgres-store.ts`](examples/postgres-store.ts) | The simplest road. A table and one partial index. |
+| **Postgres** | [`examples/postgres-store.ts`](examples/postgres-store.ts) · [schema](examples/schema/postgres.sql) | The simplest road. A table and one partial index. |
 | **Redis** | [`examples/redis-store.ts`](examples/redis-store.ts) | Must be a *different* Redis from your queues. See the caveat in the file. |
-| **MongoDB** | [`examples/mongodb-store.ts`](examples/mongodb-store.ts) | Partial index plus a TTL that cannot reap a pending job. |
+| **MongoDB** | [`examples/mongodb-store.ts`](examples/mongodb-store.ts) · [setup](examples/schema/mongodb.js) | Partial index plus a TTL that cannot reap a pending job. |
 | **DynamoDB** | [`examples/dynamodb-store.ts`](examples/dynamodb-store.ts) | Table shape taken from the production system this came from. |
 
 There is also a `MemoryOutboxStore` for tests. It is not durable and it is not
 for production.
+
+### Setting up the database
+
+Run the schema once, before the app starts. Both files are idempotent, so they
+are safe in a migration step or at boot:
+
+```bash
+psql "$DATABASE_URL" -f node_modules/bullmq-outbox/examples/schema/postgres.sql
+# or
+node node_modules/bullmq-outbox/examples/schema/mongodb.js "$MONGO_URL" mydb
+```
+
+Then copy the matching store file into your codebase and point it at your
+existing connection pool.
+
+> **Using an AI assistant?** [`AGENTS.md`](AGENTS.md) is a dense integration
+> guide written for coding agents — contracts, the decisions that matter, and
+> the mistakes that cost jobs. Point your agent at it and it should be able to
+> wire this up without reading the source.
 
 ## Draining
 
