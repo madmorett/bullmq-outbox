@@ -55,7 +55,7 @@ Working implementations to copy, not install:
 |---|---|---|
 | **Postgres** | [`examples/postgres-store.ts`](examples/postgres-store.ts) | The simplest road. A table and one partial index. |
 | **Redis** | [`examples/redis-store.ts`](examples/redis-store.ts) | Must be a *different* Redis from your queues. See the caveat in the file. |
-| **DynamoDB** | [`examples/dynamodb-store.ts`](examples/dynamodb-store.ts) | The shape running in production at Monest. |
+| **DynamoDB** | [`examples/dynamodb-store.ts`](examples/dynamodb-store.ts) | Table shape taken from the production system this came from. |
 
 There is also a `MemoryOutboxStore` for tests. It is not durable and it is not
 for production.
@@ -229,6 +229,11 @@ cd integration && npm install && npm run verify
 
 Built at [Monest](https://monest.com.br) after losing jobs to an ElastiCache
 OOM. Three services, three Redis instances, one outbox table.
+
+To be precise about what that means: the **pattern** and the hard-won details
+below are from a system that has been running since April 2026. This package
+is a rewrite of it — framework-free, storage-agnostic, tested against a real
+Redis but not yet the code in that production deployment. Treat it as 0.x.
 
 Two things we learned that are not in the code:
 
