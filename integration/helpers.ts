@@ -1,8 +1,10 @@
 import { Pool } from 'pg';
 import Redis from 'ioredis';
+import { MongoClient, type Db } from 'mongodb';
 
 export const REDIS = { host: '127.0.0.1', port: 6398 };
 export const PG = 'postgres://outbox:outbox@127.0.0.1:54329/outbox';
+export const MONGO = 'mongodb://127.0.0.1:27019';
 
 /** The schema straight out of bullmq-outbox/examples/postgres-store.ts. */
 export const SCHEMA = `
@@ -80,4 +82,21 @@ export async function until(
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`condition not met within ${timeoutMs}ms`);
+}
+
+/** A Mongo database with the collection and indexes the example documents. */
+export async function freshMongo(): Promise<{ client: MongoClient; db: Db }> {
+  const client = new MongoClient(MONGO);
+  await client.connect();
+  const db = client.db('outbox_test');
+
+  await db.collection('bullmq_outbox').deleteMany({});
+
+  // The indexes from examples/mongodb-store.ts, created exactly as documented.
+  await db.collection('bullmq_outbox').createIndex(
+    { status: 1, createdAt: 1 },
+    { name: 'pending_by_age', partialFilterExpression: { status: 'pending' } },
+  );
+
+  return { client, db };
 }

@@ -55,6 +55,7 @@ Working implementations to copy, not install:
 |---|---|---|
 | **Postgres** | [`examples/postgres-store.ts`](examples/postgres-store.ts) | The simplest road. A table and one partial index. |
 | **Redis** | [`examples/redis-store.ts`](examples/redis-store.ts) | Must be a *different* Redis from your queues. See the caveat in the file. |
+| **MongoDB** | [`examples/mongodb-store.ts`](examples/mongodb-store.ts) | Partial index plus a TTL that cannot reap a pending job. |
 | **DynamoDB** | [`examples/dynamodb-store.ts`](examples/dynamodb-store.ts) | Table shape taken from the production system this came from. |
 
 There is also a `MemoryOutboxStore` for tests. It is not durable and it is not
@@ -217,13 +218,38 @@ failure hiding the real one.
 
 Unit tests with a fake queue prove the logic; they cannot prove the package
 survives a Redis that is actually out of memory. [`integration/`](integration/)
-runs against real Redis and Postgres containers and breaks the Redis for real —
-`maxmemory` set just above current usage, so writes are rejected with the same
-`OOM command not allowed` error ElastiCache throws.
+runs against real Redis, Postgres and MongoDB containers and breaks the Redis
+for real — `maxmemory` set just above current usage, so writes are rejected
+with the same `OOM command not allowed` error ElastiCache throws.
 
 ```bash
-cd integration && npm install && npm run verify
+cd integration && pnpm install && pnpm run verify
 ```
+
+The Postgres and MongoDB examples are tested verbatim, so what you copy is
+what was exercised.
+
+### Does the drain stay cheap as the store fills up?
+
+`pnpm run scale` measures `loadPending(50)` as resolved history grows:
+
+| resolved entries | Postgres | MongoDB |
+|---|---|---|
+| 0 | 1.14 ms | 0.92 ms |
+| 500,000 | **0.83 ms** | **0.65 ms** |
+
+Flat, on both, always on an index — never a `Seq Scan` or `COLLSCAN`. With
+500k documents in the collection, Mongo examines exactly 50 to return 50.
+
+That is the **partial index** doing its work, and it is why the table is 74 MB
+while its index is 16 kB: the index covers only what is pending, so it tracks
+your backlog rather than your history. It is the same property that makes the
+DynamoDB deployment this came from scale, where the GSI reads only PENDING
+items without touching the table.
+
+Drop the partial predicate and the drain stays fast but the index grows
+forever. Drop the index entirely and you have an outbox that gets slower every
+month — precisely when you need it.
 
 ## Where this came from
 
