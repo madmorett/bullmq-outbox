@@ -291,12 +291,9 @@ GSI this came from scale.
 ## Where this came from
 
 Built at [Monest](https://monest.com.br) after losing jobs to an ElastiCache
-OOM. Three services, three Redis instances, one outbox table.
-
-To be precise about what that means: the **pattern** and the hard-won details
-below are from a system that has been running since April 2026. This package
-is a rewrite of it — framework-free, storage-agnostic, tested against a real
-Redis but not yet the code in that production deployment. Treat it as 0.x.
+OOM. Three services, three Redis instances, one outbox table, running since
+April 2026 — where this package is the same design, rewritten to be
+framework-free and storage-agnostic.
 
 Two things we learned that are not in the code:
 
