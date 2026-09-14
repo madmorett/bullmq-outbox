@@ -194,6 +194,36 @@ Do not declare it working because it compiles. Prove the failure path:
 The repo's [`integration/`](integration/) suite does exactly this against
 real containers, and is worth reading before writing your own.
 
+## Keep the store lazy
+
+Whatever you build the store and hooks out of — a logger, a metrics client, a
+database pool — resolve it **inside** the functions, not at module scope:
+
+```ts
+// ✗ runs when the module is imported
+const logger = getLogger('outbox');
+const store = { async save(e) { logger.warn(...) } };
+
+// ✓ runs when a job actually fails
+let logger;
+const store = { async save(e) { (logger ??= getLogger('outbox')).warn(...) } };
+```
+
+The reason is test frameworks. If your outbox module is re-exported from a
+barrel that application code imports, it executes before a spec's
+`jest.mock()` factories initialize, and every spec that mocks one of those
+dependencies dies at import with a message that points nowhere near the real
+cause:
+
+```
+ReferenceError: Cannot access 'mockLogger' before initialization
+```
+
+This bit the production integration this package was extracted from: 214
+specs mocked the logger, and hoisting a single `getLogger()` call to module
+scope broke all of them at once. `createOutbox()` itself is safe to call at
+module scope — it touches nothing until a job fails.
+
 ## Common mistakes
 
 | Symptom | Cause |
@@ -204,3 +234,4 @@ real containers, and is worth reading before writing your own.
 | Store grows forever | Nothing deletes resolved rows — Postgres needs a cron; Mongo needs the TTL index |
 | Drain slows down over months | Index created without the partial predicate, or not created at all |
 | Real-time jobs arrive late | Missing `shouldCapture` exclusion |
+| `Cannot access 'mockX' before initialization` in unrelated specs | Your store or hooks instantiate something at module scope — see below |
