@@ -316,6 +316,16 @@ domain event to many queues, each with its own retries and failure domain.
 Wrap your queues with this package first and the fan-out inherits the
 durability.
 
+## Releasing
+
+Publishing is automatic: merge a PR that bumps the version in `package.json`
+and CI publishes to npm, then tags the commit. A merge that does not change
+the version publishes nothing.
+
+Authentication is [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers)
+(OIDC) — there is no token in GitHub Secrets to leak or rotate, and released
+versions carry a provenance attestation on npm.
+
 ## License
 
 MIT © [Matheus Morett](https://matheusmorett.com/)
