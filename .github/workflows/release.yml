@@ -1,0 +1,74 @@
+# Publica no npm quando a versão do package.json sobe no main.
+#
+# Sem token: a autenticação é OIDC (Trusted Publishing). O npm confia neste
+# repositório e neste arquivo de workflow — nada guardado em Secrets, nada
+# para vazar ou rotacionar. Registrado uma vez em
+# npmjs.com → Package → Settings → Trusted Publisher.
+#
+# O bump de versão é parte do PR, então a decisão de publicar passa pelo
+# review junto com o código. Um merge que não mexe na versão não publica.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Sem isto o publish falha: é o que permite ao runner pedir o token OIDC.
+permissions:
+  contents: write # criar a tag
+  id-token: write # OIDC para o npm
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing exige npm >= 11.5.1; o Node 22 ainda traz o 10.x.
+      - run: npm install -g npm@latest
+
+      - name: A versão mudou?
+        id: check
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          NAME=$(node -p "require('./package.json').name")
+          # `npm view` sai com erro se a versão não existe — é o caso feliz aqui
+          if npm view "$NAME@$LOCAL" version >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$LOCAL já está publicado — nada a fazer"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "version=$LOCAL" >> "$GITHUB_OUTPUT"
+            echo "::notice::publicando $NAME@$LOCAL"
+          fi
+
+      # O CI já roda isto em todo PR; repetido aqui porque publicar é
+      # irreversível e o main pode ter recebido um merge que ninguém testou
+      # em conjunto.
+      - if: steps.check.outputs.publish == 'true'
+        run: npm install
+
+      - if: steps.check.outputs.publish == 'true'
+        run: npm run typecheck
+
+      - if: steps.check.outputs.publish == 'true'
+        run: npm run typecheck:examples
+
+      - if: steps.check.outputs.publish == 'true'
+        run: npm test
+
+      - if: steps.check.outputs.publish == 'true'
+        run: npm publish
+
+      - name: Tag da versão publicada
+        if: steps.check.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
