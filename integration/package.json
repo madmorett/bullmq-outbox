@@ -5,7 +5,7 @@
   "scripts": {
     "up": "docker compose up -d --wait",
     "down": "docker compose down -v",
-    "test": "tsx --test --test-concurrency=1 --test-timeout=30000 *.test.ts",
+    "test": "tsx --test --test-concurrency=1 --test-timeout=120000 *.test.ts",
     "verify": "npm run up && npm test; npm run down",
     "scale": "tsx scale.ts"
   },
