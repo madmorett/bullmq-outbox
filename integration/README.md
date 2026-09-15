@@ -54,6 +54,36 @@ pending. It keys on `resolvedAt`, which is set only when an entry leaves the
 rotation — a TTL on `createdAt` would delete jobs mid-outage, before they were
 ever replayed.
 
+## What survives a crash?
+
+Every other test here simulates failure — a closed connection, a Redis at
+`maxmemory`. None of them kill the process. But the failure that actually
+loses jobs in production is the one where the machine goes away mid-drain: an
+OOM kill, a `docker stop` past its grace period, a spot instance reclaimed.
+
+`crash.test.ts` spawns a real drain in its own process and `SIGKILL`s it at a
+precise point — SIGKILL because it cannot be trapped, so no cleanup handler
+runs. That is the point.
+
+The worker prints where it is (`READY`, `REPLAYED <id>`, `MARKED <id>`,
+`PAUSED <id>`) so the test kills at an exact moment instead of racing a timer.
+
+Three cases:
+
+- **killed between Redis and the store** — the dangerous window. The job is in
+  Redis, the store still says pending. The entry survives as pending and the
+  next drain replays it. At-least-once: the job may arrive twice, which is the
+  deliberate trade — a duplicate is recoverable with an idempotent handler, a
+  lost job is not.
+- **killed before anything reaches Redis** — the entry is untouched, and
+  crucially no retry is burned.
+- **killed three times in a row** — no entry disappears, and a clean drain
+  afterwards finishes the work.
+
+The tests were validated by breaking the package on purpose: reordering
+`markProcessed` before `add` (the classic outbox bug that loses jobs) makes two
+of the three fail immediately.
+
 ## Does it scale?
 
 `pnpm run scale` answers this with numbers rather than assurances.
