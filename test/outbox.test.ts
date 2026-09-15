@@ -103,6 +103,40 @@ describe('Outbox.wrapQueue', () => {
     assert.equal(store.pending().length, 2);
   });
 
+  it('captures a failed bulk concurrently, not one job at a time', async () => {
+    // A bulk of 500 that fails would otherwise serialise 500 store round-trips
+    // while the caller waits. During an outage that is seconds of added
+    // latency, and every job not yet reached is lost if the process dies or
+    // the request times out mid-loop.
+    let inFlight = 0;
+    let peak = 0;
+    const store: OutboxStore = {
+      async save() {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight--;
+      },
+      async loadPending() {
+        return [];
+      },
+      async markProcessed() {},
+      async markFailed() {},
+    };
+
+    const queue = fakeQueue('emails');
+    const wrapped = createOutbox({ store }).wrapQueue(queue);
+    queue.breakWith(new Error('down'));
+
+    const jobs = Array.from({ length: 20 }, (_unused, index) => ({
+      name: `job-${index}`,
+      data: { index },
+    }));
+    await assert.rejects(() => wrapped.addBulk(jobs));
+
+    assert.ok(peak > 1, `bulk capture ran serially (peak concurrency ${peak})`);
+  });
+
   it('honours shouldCapture for real-time queues', async () => {
     const store = new MemoryOutboxStore();
     const queue = fakeQueue('live-chat');

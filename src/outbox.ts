@@ -144,15 +144,13 @@ export class Outbox {
               // from a total one at this layer, and a job replayed twice is
               // cheaper than a job lost. Give jobs a `jobId` if the replay
               // needs to dedupe.
-              for (const job of jobs) {
-                await outbox.capture(
-                  target.name,
-                  job.name,
-                  job.data,
-                  job.opts,
-                  error,
-                );
-              }
+              //
+              // Concurrently, not in sequence: a failed bulk of 500 jobs would
+              // otherwise serialise 500 store round-trips while the caller
+              // waits — seconds of latency during the exact incident this is
+              // for, and every job not yet reached is lost if the process is
+              // killed or the request times out mid-loop.
+              await outbox.captureAll(target.name, jobs, error);
               throw error;
             }
           };
@@ -246,15 +244,8 @@ export class Outbox {
         try {
           return await super.addBulk(jobs);
         } catch (error) {
-          for (const job of jobs) {
-            await outbox.capture(
-              this.name,
-              job.name,
-              job.data,
-              job.opts,
-              error,
-            );
-          }
+          // concurrent, for the same reason as the Proxy path above
+          await outbox.captureAll(this.name, jobs, error);
           throw error;
         }
       }
@@ -332,6 +323,25 @@ export class Outbox {
         }),
       );
     }
+  }
+
+  /**
+   * Persist every job of a failed bulk, concurrently.
+   *
+   * `capture` never rejects (a store error is reported through `onSaveFailed`
+   * and swallowed), so there is nothing to settle — but `Promise.all` keeps
+   * that true even if a future `capture` learns to throw.
+   */
+  async captureAll(
+    queueName: string,
+    jobs: { name: string; data: unknown; opts?: unknown }[],
+    error: unknown,
+  ): Promise<void> {
+    await Promise.all(
+      jobs.map((job) =>
+        this.capture(queueName, job.name, job.data, job.opts, error),
+      ),
+    );
   }
 
   /**
