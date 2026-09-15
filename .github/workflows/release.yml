@@ -1,22 +1,24 @@
-# Publica no npm quando a versão do package.json sobe no main.
+# Publishes to npm when the version in package.json goes up on main.
 #
-# Sem token: a autenticação é OIDC (Trusted Publishing). O npm confia neste
-# repositório e neste arquivo de workflow — nada guardado em Secrets, nada
-# para vazar ou rotacionar. Registrado uma vez em
+# No token: authentication is OIDC (Trusted Publishing). npm trusts this
+# repository and this workflow file — nothing stored in Secrets, nothing to
+# leak or rotate. Registered once, in
 # npmjs.com → Package → Settings → Trusted Publisher.
 #
-# O bump de versão é parte do PR, então a decisão de publicar passa pelo
-# review junto com o código. Um merge que não mexe na versão não publica.
+# The version bump lives in the PR, so the decision to release passes through
+# review alongside the code. A merge that does not touch the version publishes
+# nothing.
 name: Release
 
 on:
   push:
     branches: [main]
 
-# Sem isto o publish falha: é o que permite ao runner pedir o token OIDC.
+# Without this the publish fails: it is what lets the runner request the
+# OIDC token.
 permissions:
-  contents: write # criar a tag
-  id-token: write # OIDC para o npm
+  contents: write # create the tag
+  id-token: write # OIDC for npm
 
 jobs:
   publish:
@@ -29,27 +31,26 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # Trusted Publishing exige npm >= 11.5.1; o Node 22 ainda traz o 10.x.
+      # Trusted Publishing needs npm >= 11.5.1; Node 22 still ships npm 10.
       - run: npm install -g npm@latest
 
-      - name: A versão mudou?
+      - name: Did the version change?
         id: check
         run: |
           LOCAL=$(node -p "require('./package.json').version")
           NAME=$(node -p "require('./package.json').name")
-          # `npm view` sai com erro se a versão não existe — é o caso feliz aqui
+          # `npm view` exits non-zero when the version does not exist — the happy case here
           if npm view "$NAME@$LOCAL" version >/dev/null 2>&1; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::$NAME@$LOCAL já está publicado — nada a fazer"
+            echo "::notice::$NAME@$LOCAL is already published — nothing to do"
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "version=$LOCAL" >> "$GITHUB_OUTPUT"
-            echo "::notice::publicando $NAME@$LOCAL"
+            echo "::notice::publishing $NAME@$LOCAL"
           fi
 
-      # O CI já roda isto em todo PR; repetido aqui porque publicar é
-      # irreversível e o main pode ter recebido um merge que ninguém testou
-      # em conjunto.
+      # CI already runs these on every PR. They run again because publishing is
+      # irreversible, and main can receive a merge nobody tested in combination.
       - if: steps.check.outputs.publish == 'true'
         run: npm install
 
@@ -65,7 +66,7 @@ jobs:
       - if: steps.check.outputs.publish == 'true'
         run: npm publish
 
-      - name: Tag da versão publicada
+      - name: Tag the published version
         if: steps.check.outputs.publish == 'true'
         env:
           VERSION: ${{ steps.check.outputs.version }}
